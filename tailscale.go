@@ -223,7 +223,42 @@ func TsnetListen(sd C.int, network, addr *C.char, listenerOut *C.int) C.int {
 		return s.recErr(err)
 	}
 	s.started = true
+	return bridgeListener(s, ln, listenerOut)
+}
 
+// TsnetListenService creates a listener that advertises this node as a host of
+// a Tailscale Service (a VIP identified by `name`, e.g. "svc:example"). It is
+// the service-hosting counterpart to TsnetListen and returns a listener the
+// same way (one side of a socketpair; accept with tailscale_accept). `port`
+// is the TCP port to advertise; when `terminate_tls` is non-zero the node
+// terminates TLS (SNI must be the Service FQDN) and forwards plaintext.
+//
+// Note (per tsnet.ListenService): the node must be TAGGED, and advertising
+// still requires admin/ACL approval before the Service goes live.
+//
+//export TsnetListenService
+func TsnetListenService(sd C.int, name *C.char, port C.int, terminateTLS C.int, listenerOut *C.int) C.int {
+	s := getServer(sd)
+	if s == nil {
+		return C.EBADF
+	}
+
+	svcLn, err := s.s.ListenService(C.GoString(name), tsnet.ServiceModeTCP{
+		Port:         uint16(port),
+		TerminateTLS: terminateTLS != 0,
+	})
+	if err != nil {
+		return s.recErr(err)
+	}
+	s.started = true
+	// *ServiceListener embeds net.Listener, so the same bridge applies.
+	return bridgeListener(s, svcLn, listenerOut)
+}
+
+// bridgeListener hands one side of a socketpair(2) to C for a net.Listener,
+// accepting connections in a goroutine and passing each accepted connection's
+// fd through via SCM_RIGHTS. Shared by TsnetListen and TsnetListenService.
+func bridgeListener(s *server, ln net.Listener, listenerOut *C.int) C.int {
 	// The tailscale_listener we return to C is one side of a socketpair(2).
 	// We do this so we can proactively call ln.Accept in a goroutine and
 	// feed an fd for the connection through the listener. This lets C use

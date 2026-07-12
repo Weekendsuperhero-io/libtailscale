@@ -131,6 +131,25 @@ typedef int tailscale_listener;
 // Returns zero on success or -1 on error, call tailscale_errmsg for details.
 extern int tailscale_listen(tailscale sd, const char* network, const char* addr, tailscale_listener* listener_out);
 
+// tailscale_listen_service creates a listener that advertises this node as a
+// host of a Tailscale Service (a VIP identified by name, e.g. "svc:example").
+// It is the service-hosting counterpart to tailscale_listen: the returned
+// listener is accepted the same way (tailscale_accept), each accepted
+// connection being a connection to the Service.
+//
+// port is the TCP port to advertise for the Service. When terminate_tls is
+// non-zero the node terminates TLS before forwarding (the only permitted SNI
+// is the Service's fully-qualified domain name) and hands plaintext to the
+// listener; when zero the raw (still-encrypted) stream is forwarded.
+//
+// The node must be tagged, and advertising still requires admin/ACL approval
+// before the Service goes live. See https://tailscale.com/kb/1552.
+//
+// It will start the server if it has not been started yet.
+//
+// Returns zero on success or -1 on error, call tailscale_errmsg for details.
+extern int tailscale_listen_service(tailscale sd, const char* name, int port, int terminate_tls, tailscale_listener* listener_out);
+
 // Returns the remote address for an incoming connection for a particular listener.  The address (eitehr ip4 or ip6)
 // will ge written to buf on on success.
 // Returns:

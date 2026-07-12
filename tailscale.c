@@ -22,6 +22,7 @@ extern int TsnetSetLogFD(int sd, int fd);
 extern int TsnetGetIps(int sd, char *buf, size_t buflen);
 extern int TsnetGetRemoteAddr(int listener, int conn, char *buf, size_t buflen);
 extern int TsnetListen(int sd, char* net, char* addr, int* listenerOut);
+extern int TsnetListenService(int sd, char* name, int port, int terminateTLS, int* listenerOut);
 extern int TsnetAccept(int ld, int* connOut);
 extern int TsnetLoopback(int sd, char* addrOut, size_t addrLen, char* proxyOut, char* localOut);
 extern int TsnetEnableFunnelToLocalhostPlaintextHttp1(int sd, int localhostPort);
@@ -48,6 +49,10 @@ int tailscale_dial(tailscale sd, const char* network, const char* addr, tailscal
 
 int tailscale_listen(tailscale sd, const char* network, const char* addr, tailscale_listener* listener_out) {
 	return TsnetListen(sd, (char*)network, (char*)addr, (int*)listener_out);
+}
+
+int tailscale_listen_service(tailscale sd, const char* name, int port, int terminate_tls, tailscale_listener* listener_out) {
+	return TsnetListenService(sd, (char*)name, port, terminate_tls, (int*)listener_out);
 }
 
 int tailscale_accept(tailscale_listener ld, tailscale_conn* conn_out) {
