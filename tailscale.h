@@ -63,6 +63,13 @@ extern int tailscale_close(tailscale sd);
 //
 // Returns zero on success or -1 on error, call tailscale_errmsg for details.
 extern int tailscale_set_dir(tailscale sd, const char* dir);
+
+// tailscale_set_state_key encrypts the on-disk node state (tailscaled.state)
+// with AES-256-GCM using the given 64-char hex key (32 bytes). Call after
+// tailscale_set_dir and before the server starts. A pre-existing plaintext
+// state file is migrated in place (sealed, verified, then removed). The
+// caller owns key custody; losing the key orphans the node identity.
+extern int tailscale_set_state_key(tailscale sd, const char* key);
 extern int tailscale_set_hostname(tailscale sd, const char* hostname);
 extern int tailscale_set_authkey(tailscale sd, const char* authkey);
 extern int tailscale_set_control_url(tailscale sd, const char* control_url);
