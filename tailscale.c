@@ -14,6 +14,7 @@ extern int TsnetClose(int sd);
 extern int TsnetErrmsg(int sd, char* buf, size_t buflen);
 extern int TsnetDial(int sd, char* net, char* addr, int* connOut);
 extern int TsnetSetDir(int sd, char* str);
+extern int TsnetSetStateKey(int sd, char* key);
 extern int TsnetSetHostname(int sd, char* str);
 extern int TsnetSetAuthKey(int sd, char* str);
 extern int TsnetSetControlURL(int sd, char* str);
@@ -69,6 +70,9 @@ int tailscale_getips(tailscale sd, char* buf, size_t buflen) {
 
 int tailscale_set_dir(tailscale sd, const char* dir) {
 	return TsnetSetDir(sd, (char*)dir);
+}
+int tailscale_set_state_key(tailscale sd, const char* key) {
+	return TsnetSetStateKey(sd, (char*)key);
 }
 int tailscale_set_hostname(tailscale sd, const char* hostname) {
 	return TsnetSetHostname(sd, (char*)hostname);
