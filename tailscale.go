@@ -503,6 +503,26 @@ func TsnetSetDir(sd C.int, str *C.char) C.int {
 	return 0
 }
 
+//export TsnetSetStateKey
+func TsnetSetStateKey(sd C.int, key *C.char) C.int {
+	s := getServer(sd)
+	if s == nil {
+		return C.EBADF
+	}
+	if s.started {
+		return s.recErr(fmt.Errorf("tailscale_set_state_key must be called before the server starts"))
+	}
+	if s.s.Dir == "" {
+		return s.recErr(fmt.Errorf("tailscale_set_state_key requires tailscale_set_dir first"))
+	}
+	store, err := newEncryptedFileStore(s.s.Dir, C.GoString(key))
+	if err != nil {
+		return s.recErr(err)
+	}
+	s.s.Store = store
+	return 0
+}
+
 //export TsnetSetHostname
 func TsnetSetHostname(sd C.int, str *C.char) C.int {
 	s := getServer(sd)
