@@ -5,10 +5,13 @@
 package main
 
 //#include "errno.h"
+//#include <stdint.h>
 import "C"
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +28,7 @@ import (
 	"golang.org/x/sys/unix"
 	"tailscale.com/hostinfo"
 	"tailscale.com/ipn"
+	"tailscale.com/net/socks5"
 	"tailscale.com/tsnet"
 	"tailscale.com/types/logger"
 )
@@ -42,6 +46,27 @@ type server struct {
 	s       *tsnet.Server
 	lastErr string
 	started bool
+
+	// mu guards the fields below, which are written by tailscale_socks5_listen
+	// and tailscale_watch_ipn_bus and read by the goroutines they spawn.
+	mu sync.Mutex
+
+	// socksLn is the loopback SOCKS5 listener owned by
+	// tailscale_socks5_listen. Each call replaces it, which is the whole
+	// point: see that function's comment.
+	socksLn net.Listener
+
+	// busCancels stops every tailscale_watch_ipn_bus watcher when the server
+	// closes, so a caller that never closes its read fd cannot leak one.
+	busCancels []context.CancelFunc
+}
+
+// logf routes to the node's logger once one is installed (tailscale_set_logfd)
+// and discards otherwise: tsnet.Server.Logf is nil until then.
+func (s *server) logf(format string, args ...any) {
+	if s.s.Logf != nil {
+		s.s.Logf(format, args...)
+	}
 }
 
 func getServer(sd C.int) *server {
@@ -141,6 +166,20 @@ func TsnetClose(sd C.int) C.int {
 
 	if s == nil {
 		return C.EBADF
+	}
+
+	// Stop what this file owns before handing off to tsnet: the SOCKS5
+	// listener from tailscale_socks5_listen and every tailscale_watch_ipn_bus
+	// watcher, so neither outlives the node.
+	s.mu.Lock()
+	socksLn, busCancels := s.socksLn, s.busCancels
+	s.socksLn, s.busCancels = nil, nil
+	s.mu.Unlock()
+	if socksLn != nil {
+		socksLn.Close()
+	}
+	for _, cancel := range busCancels {
+		cancel()
 	}
 
 	// TODO: cancel Up
@@ -667,6 +706,177 @@ func TsnetStatusJSON(sd C.int, jsonOut **C.char) C.int {
 		return s.recErr(err)
 	}
 	*jsonOut = C.CString(string(b))
+	return 0
+}
+
+// socksCredBytes is the entropy behind the SOCKS5 password: 16 bytes renders
+// as 32 hex characters, matching tsnet's own proxy credential and the
+// char cred_out[static 33] contract in tailscale.h.
+const socksCredBytes = 16
+
+// startSocks5 replaces sd's SOCKS5 proxy with one on a fresh loopback
+// listener, returning its address and credential. See
+// tailscale_socks5_listen's comment in tailscale.h for why every call builds a
+// new listener rather than caching one.
+func (s *server) startSocks5() (addr, cred string, err error) {
+	var credBuf [socksCredBytes]byte
+	if _, err := crand.Read(credBuf[:]); err != nil {
+		return "", "", err
+	}
+	cred = hex.EncodeToString(credBuf[:])
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", "", err
+	}
+
+	s.mu.Lock()
+	prev := s.socksLn
+	s.socksLn = ln
+	s.mu.Unlock()
+	if prev != nil {
+		// Ends the previous Serve loop; connections it already handed off are
+		// unaffected.
+		prev.Close()
+	}
+
+	// Dialer is the node's own user dialer, so the proxy resolves MagicDNS and
+	// routes over the tailnet exactly as tsnet's own does. Server.Dial also
+	// awaits Running, so a connection opened during bring-up waits for the
+	// node rather than failing; the caller's own request timeout still applies.
+	srv := &socks5.Server{
+		Logf:     logger.WithPrefix(s.logf, "socks5: "),
+		Dialer:   s.s.Dial,
+		Username: "tsnet",
+		Password: cred,
+	}
+	go func() {
+		// A replaced or closed listener is the ordinary exit path.
+		s.logf("tailscale_socks5_listen: SOCKS5 server exited: %v", srv.Serve(ln))
+	}()
+
+	return ln.Addr().String(), cred, nil
+}
+
+//export TsnetSocks5Listen
+func TsnetSocks5Listen(sd C.int, addrOut *C.char, addrLen C.size_t, credOut *C.char) C.int {
+	// Panic here to ensure we always leave the out values NUL-terminated.
+	if addrOut == nil {
+		panic("socks5_listen passed nil addr_out")
+	} else if addrLen == 0 {
+		panic("socks5_listen passed addrlen of 0")
+	} else if credOut == nil {
+		panic("socks5_listen passed nil cred_out")
+	}
+
+	// Start out NUL-terminated to cover error conditions.
+	*addrOut = '\x00'
+	*credOut = '\x00'
+
+	s := getServer(sd)
+	if s == nil {
+		return C.EBADF
+	}
+
+	addr, cred, err := s.startSocks5()
+	if err != nil {
+		return s.recErr(err)
+	}
+
+	out := unsafe.Slice((*byte)(unsafe.Pointer(addrOut)), addrLen)
+	n := copy(out, addr)
+	if n >= len(out) {
+		out[len(out)-1] = '\x00' // always NUL-terminate
+		return C.ERANGE
+	}
+	out[n] = '\x00'
+
+	// credOut is non-nil and 33 bytes long because it is defined in C as
+	// char cred_out[static 33].
+	out = unsafe.Slice((*byte)(unsafe.Pointer(credOut)), 33)
+	copy(out, cred)
+	out[32] = '\x00'
+
+	return 0
+}
+
+// streamNotifies writes one JSON-encoded notification per line to w until
+// next reports an error or the reader goes away, then closes w. Split out of
+// TsnetWatchIPNBus so the framing and the shutdown paths are testable without
+// a node.
+func streamNotifies(w io.WriteCloser, next func() (ipn.Notify, error), logf logger.Logf) {
+	defer w.Close()
+	enc := json.NewEncoder(w)
+	for {
+		n, err := next()
+		if err != nil {
+			logf("tailscale_watch_ipn_bus: watch ended: %v", err)
+			return
+		}
+		// Encode writes one line per value. A caller that has closed its read
+		// end surfaces here as EPIPE, which is how a watch is cancelled; Go
+		// reports it rather than raising SIGPIPE because the descriptor is
+		// neither stdout nor stderr.
+		if err := enc.Encode(n); err != nil {
+			logf("tailscale_watch_ipn_bus: writer closed: %v", err)
+			return
+		}
+	}
+}
+
+//export TsnetWatchIPNBus
+func TsnetWatchIPNBus(sd C.int, mask C.uint64_t, fdOut *C.int) C.int {
+	if fdOut == nil {
+		panic("watch_ipn_bus passed nil fd_out")
+	}
+	*fdOut = -1
+
+	s := getServer(sd)
+	if s == nil {
+		return C.EBADF
+	}
+
+	// LocalClient rides tsnet's in-memory LocalAPI listener, so this watch
+	// involves no socket and no HTTP client: unlike a watch opened over
+	// Loopback()'s TCP listener it cannot be severed by the OS reclaiming
+	// that socket, nor cut short by a client-side request timeout.
+	lc, err := s.s.LocalClient()
+	if err != nil {
+		return s.recErr(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	w, err := lc.WatchIPNBus(ctx, ipn.NotifyWatchOpt(mask))
+	if err != nil {
+		cancel()
+		return s.recErr(err)
+	}
+
+	// A pipe rather than a cgo callback: this ABI already hands out bare
+	// descriptors (tailscale_conn), and newline-delimited JSON is what every
+	// existing consumer of the LocalAPI bus already parses. syscall.Pipe
+	// rather than os.Pipe because the read end belongs to the caller — an
+	// *os.File would close it from a finalizer once Go lost the reference.
+	var fds [2]int
+	if err := syscall.Pipe(fds[:]); err != nil {
+		w.Close()
+		cancel()
+		return s.recErr(err)
+	}
+	wf := os.NewFile(uintptr(fds[1]), "ipn-bus")
+
+	s.mu.Lock()
+	s.busCancels = append(s.busCancels, cancel)
+	s.mu.Unlock()
+
+	go func() {
+		defer func() {
+			w.Close()
+			cancel()
+		}()
+		streamNotifies(wf, w.Next, s.logf)
+	}()
+
+	*fdOut = C.int(fds[0])
 	return 0
 }
 

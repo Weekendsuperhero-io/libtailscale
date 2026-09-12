@@ -13,6 +13,7 @@ FOUNDATION_EXPORT const unsigned char TailscaleKitVersionString[];
 // TODO: Is there away to avoid the header duplication here?
 // WARNING: Adding/changing the libtailscale functions must be replicated here
 #include <stddef.h>
+#include <stdint.h>
 
 #ifndef TAILSCALEKIT_H
 #define TAILSCALEKIT_H
@@ -197,6 +198,51 @@ extern int tailscale_loopback(tailscale sd, char* addr_out, size_t addrlen, char
 // 	EBADF - sd is not a valid tailscale
 // 	-1    - call tailscale_errmsg for details (*json_out is NULL)
 extern int tailscale_status_json(tailscale sd, char** json_out);
+
+// tailscale_socks5_listen starts a SOCKS5 proxy for sd on a fresh loopback
+// listener and returns its address and credential. Dial through it with
+// username "tsnet" and cred_out as the password; connections are made over the
+// tailnet by sd's own user dialer, so MagicDNS names resolve as they do for
+// tailscale_dial.
+//
+// Unlike tailscale_loopback, which caches one listener for the life of the
+// server and rebuilds it never, EVERY call here creates a new listener and
+// closes the one it replaces. That is the point: an operating system may
+// reclaim a process's sockets while it is suspended — iOS does so routinely —
+// after which tailscale_loopback's address is permanently dead and only a new
+// node restores a working proxy. Calling this again costs a socket.
+//
+// addr_out is filled with the "127.0.0.1:port" address, NUL-terminated.
+// cred_out must have room for 33 bytes; it is filled with 32 hex characters
+// and a NUL.
+//
+// It will start the server if it has not been started yet.
+//
+// Returns:
+// 	0      - success
+// 	EBADF  - sd is not a valid tailscale
+// 	ERANGE - insufficient storage in addr_out
+// 	-1     - call tailscale_errmsg for details
+extern int tailscale_socks5_listen(tailscale sd, char* addr_out, size_t addrlen, char* cred_out);
+
+// tailscale_watch_ipn_bus subscribes to sd's IPN notification bus and returns a
+// read-only file descriptor carrying one JSON-encoded ipn.Notify per line.
+// mask is an ipn.NotifyWatchOpt bitmask selecting which notifications to
+// receive.
+//
+// The watch runs over tsnet's in-memory LocalAPI listener, so unlike a watch
+// opened over tailscale_loopback it involves no socket the operating system can
+// reclaim and no client-side request timeout that can cut the long poll short.
+//
+// The caller owns the returned descriptor and stops the watch by closing it.
+// Reads block until the next notification. Closing the server also ends the
+// watch.
+//
+// Returns:
+// 	0     - success, *fd_out is set
+// 	EBADF - sd is not a valid tailscale
+// 	-1    - call tailscale_errmsg for details (*fd_out is -1)
+extern int tailscale_watch_ipn_bus(tailscale sd, uint64_t mask, int* fd_out);
 
 // tailscale_errmsg writes the details of the last error to buf.
 //
