@@ -208,3 +208,93 @@ func TestStreamNotifiesSurfacesWatchErrors(t *testing.T) {
 		t.Error("a watch error must be logged; it is the only signal the embedder gets")
 	}
 }
+
+// The JSON TailscaleKit's Swift `Ipn.MaskedPrefs` encodes for
+// `var p = MaskedPrefs(); p.WantRunning = false` — every non-optional field it
+// declares, plus the one `*Set` flag its `didSet` raised. Captured from
+// swift/TailscaleKit/LocalAPI/Types.swift rather than invented: this is the
+// document tailscale_edit_prefs is actually handed on the phone.
+const swiftWantRunningFalseMask = `{
+	"ControlURL": "",
+	"RouteAll": false,
+	"CorpDNS": false,
+	"ExitNodeID": "",
+	"ExitNodeAllowLANAccess": false,
+	"WantRunning": false,
+	"ShieldsUp": false,
+	"ForceDaemon": false,
+	"Hostname": "",
+	"WantRunningSet": true
+}`
+
+// THE cross-language pin. A field-name skew between the Swift encoder and
+// ipn.MaskedPrefs does not fail — it applies NOTHING, because the backend only
+// looks at fields whose *Set flag is true. A WantRunning cycle would silently
+// stop being a recovery action and nobody would see an error.
+func TestParseMaskedPrefsAcceptsTheSwiftEncoding(t *testing.T) {
+	mp, err := parseMaskedPrefs([]byte(swiftWantRunningFalseMask))
+	if err != nil {
+		t.Fatalf("parseMaskedPrefs: %v", err)
+	}
+	if !mp.WantRunningSet {
+		t.Error("WantRunningSet is false: the backend would apply nothing at all")
+	}
+	if mp.WantRunning {
+		t.Error("WantRunning decoded as true; the mask asked for false")
+	}
+	// Everything else the Swift struct sends must stay UNSET, or a kick would
+	// also overwrite the control URL, hostname and exit node with empty values.
+	for _, unset := range []struct {
+		name string
+		set  bool
+	}{
+		{"ControlURLSet", mp.ControlURLSet},
+		{"RouteAllSet", mp.RouteAllSet},
+		{"CorpDNSSet", mp.CorpDNSSet},
+		{"ExitNodeIDSet", mp.ExitNodeIDSet},
+		{"ExitNodeAllowLANAccessSet", mp.ExitNodeAllowLANAccessSet},
+		{"ShieldsUpSet", mp.ShieldsUpSet},
+		{"HostnameSet", mp.HostnameSet},
+	} {
+		if unset.set {
+			t.Errorf("%s is set: sending a field's zero value must not apply it", unset.name)
+		}
+	}
+}
+
+// A mask with no *Set flag is a caller bug that the LocalAPI would accept and
+// then do nothing about. Refuse it where it can still be reported.
+func TestParseMaskedPrefsRejectsAMaskThatSetsNothing(t *testing.T) {
+	if _, err := parseMaskedPrefs([]byte(`{"WantRunning": true}`)); err == nil {
+		t.Error("a mask with no Set flag must be refused, not silently applied")
+	}
+}
+
+func TestParseMaskedPrefsRejectsMalformedJSON(t *testing.T) {
+	if _, err := parseMaskedPrefs([]byte(`{"WantRunning":`)); err == nil {
+		t.Error("truncated JSON must be an error")
+	}
+}
+
+// Round trip through the shape an embedder would build from Go, so the
+// helper is pinned against ipn.MaskedPrefs itself and not only against the
+// hand-captured Swift document above.
+func TestParseMaskedPrefsRoundTripsIpnMaskedPrefs(t *testing.T) {
+	want := &ipn.MaskedPrefs{WantRunningSet: true, HostnameSet: true}
+	want.WantRunning = true
+	want.Hostname = "edith-test"
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := parseMaskedPrefs(encoded)
+	if err != nil {
+		t.Fatalf("parseMaskedPrefs: %v", err)
+	}
+	if !got.WantRunningSet || !got.WantRunning {
+		t.Errorf("WantRunning lost: set=%v value=%v", got.WantRunningSet, got.WantRunning)
+	}
+	if !got.HostnameSet || got.Hostname != "edith-test" {
+		t.Errorf("Hostname lost: set=%v value=%q", got.HostnameSet, got.Hostname)
+	}
+}

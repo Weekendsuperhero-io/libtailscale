@@ -29,6 +29,9 @@ extern int TsnetLoopback(int sd, char* addrOut, size_t addrLen, char* proxyOut, 
 extern int TsnetStatusJSON(int sd, char** jsonOut);
 extern int TsnetSocks5Listen(int sd, char* addrOut, size_t addrLen, char* credOut);
 extern int TsnetWatchIPNBus(int sd, uint64_t mask, int* fdOut);
+extern int TsnetLoginInteractive(int sd);
+extern int TsnetEditPrefs(int sd, char* maskJSON, char** prefsOut);
+extern int TsnetCurrentProfile(int sd, char** jsonOut);
 extern int TsnetEnableFunnelToLocalhostPlaintextHttp1(int sd, int localhostPort);
 
 tailscale tailscale_new() {
@@ -107,6 +110,18 @@ int tailscale_socks5_listen(tailscale sd, char* addr_out, size_t addrlen, char* 
 
 int tailscale_watch_ipn_bus(tailscale sd, uint64_t mask, int* fd_out) {
 	return TsnetWatchIPNBus(sd, mask, fd_out);
+}
+
+int tailscale_login_interactive(tailscale sd) {
+	return TsnetLoginInteractive(sd);
+}
+
+int tailscale_edit_prefs(tailscale sd, const char* mask_json, char** prefs_out) {
+	return TsnetEditPrefs(sd, (char*)mask_json, prefs_out);
+}
+
+int tailscale_current_profile(tailscale sd, char** json_out) {
+	return TsnetCurrentProfile(sd, json_out);
 }
 
 int tailscale_errmsg(tailscale sd, char* buf, size_t buflen) {

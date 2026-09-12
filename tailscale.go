@@ -880,6 +880,117 @@ func TsnetWatchIPNBus(sd C.int, mask C.uint64_t, fdOut *C.int) C.int {
 	return 0
 }
 
+// localAPITimeout bounds the in-process LocalAPI calls below. They ride
+// tsnet's in-memory listener rather than the network, but the backend behind
+// them can be mid-restart, and a cgo caller blocked forever is worse than an
+// error it can report.
+const localAPITimeout = 10 * time.Second
+
+// parseMaskedPrefs decodes the JSON form of an ipn.MaskedPrefs — the same
+// document the LocalAPI's PATCH /prefs accepts, so an embedder can send what
+// it already builds for that endpoint.
+//
+// Extracted from the cgo shell because this is the whole risk surface of
+// tailscale_edit_prefs: a field-name skew between the caller's encoder and
+// ipn.MaskedPrefs would silently apply NOTHING (every *Set flag false) rather
+// than fail, and test files cannot use cgo.
+func parseMaskedPrefs(maskJSON []byte) (*ipn.MaskedPrefs, error) {
+	var mp ipn.MaskedPrefs
+	if err := json.Unmarshal(maskJSON, &mp); err != nil {
+		return nil, fmt.Errorf("edit_prefs: %w", err)
+	}
+	if mp.IsEmpty() {
+		return nil, fmt.Errorf("edit_prefs: no fields marked set (check the *Set flags)")
+	}
+	return &mp, nil
+}
+
+//export TsnetLoginInteractive
+func TsnetLoginInteractive(sd C.int) C.int {
+	s := getServer(sd)
+	if s == nil {
+		return C.EBADF
+	}
+	lc, err := s.s.LocalClient()
+	if err != nil {
+		return s.recErr(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), localAPITimeout)
+	defer cancel()
+	return s.recErr(lc.StartLoginInteractive(ctx))
+}
+
+//export TsnetEditPrefs
+func TsnetEditPrefs(sd C.int, maskJSON *C.char, prefsOut **C.char) C.int {
+	if maskJSON == nil {
+		panic("edit_prefs passed nil mask_json")
+	}
+	if prefsOut != nil {
+		*prefsOut = nil
+	}
+	s := getServer(sd)
+	if s == nil {
+		return C.EBADF
+	}
+	mp, err := parseMaskedPrefs([]byte(C.GoString(maskJSON)))
+	if err != nil {
+		return s.recErr(err)
+	}
+	lc, err := s.s.LocalClient()
+	if err != nil {
+		return s.recErr(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), localAPITimeout)
+	defer cancel()
+	prefs, err := lc.EditPrefs(ctx, mp)
+	if err != nil {
+		return s.recErr(err)
+	}
+	// prefs_out is optional: the common caller (a WantRunning cycle) has no
+	// use for the result and would only have to free it.
+	if prefsOut == nil {
+		return 0
+	}
+	b, err := json.Marshal(prefs)
+	if err != nil {
+		return s.recErr(err)
+	}
+	*prefsOut = C.CString(string(b))
+	return 0
+}
+
+//export TsnetCurrentProfile
+func TsnetCurrentProfile(sd C.int, jsonOut **C.char) C.int {
+	if jsonOut == nil {
+		panic("current_profile passed nil json_out")
+	}
+	*jsonOut = nil
+	s := getServer(sd)
+	if s == nil {
+		return C.EBADF
+	}
+	lc, err := s.s.LocalClient()
+	if err != nil {
+		return s.recErr(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), localAPITimeout)
+	defer cancel()
+	// ProfileStatus is the only exported way in: it fetches the current
+	// profile AND the full list, and `all` is discarded here. Both requests
+	// ride memnet, so the second one costs no network — just the marshalling
+	// the client does anyway.
+	current, _, err := lc.ProfileStatus(ctx)
+	if err != nil {
+		return s.recErr(err)
+	}
+	b, err := json.Marshal(current)
+	if err != nil {
+		return s.recErr(err)
+	}
+	*jsonOut = C.CString(string(b))
+	return 0
+}
+
 //export TsnetEnableFunnelToLocalhostPlaintextHttp1
 func TsnetEnableFunnelToLocalhostPlaintextHttp1(sd C.int, localhostPort C.int) C.int {
 	s := getServer(sd)

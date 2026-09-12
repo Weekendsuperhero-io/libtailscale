@@ -244,6 +244,101 @@ extern int tailscale_socks5_listen(tailscale sd, char* addr_out, size_t addrlen,
 // 	-1    - call tailscale_errmsg for details (*fd_out is -1)
 extern int tailscale_watch_ipn_bus(tailscale sd, uint64_t mask, int* fd_out);
 
+// tailscale_set_state_key encrypts the on-disk node state (tailscaled.state)
+// with AES-256-GCM using the given 64-char hex key (32 bytes). Call after
+// tailscale_set_dir and before the server starts. A pre-existing plaintext
+// state file is migrated in place (sealed, verified, then removed). The
+// caller owns key custody; losing the key orphans the node identity.
+extern int tailscale_set_state_key(tailscale sd, const char* key);
+
+// tailscale_listen_service creates a listener that advertises this node as a
+// host of a Tailscale Service (a VIP identified by name, e.g. "svc:example").
+// It is the service-hosting counterpart to tailscale_listen: the returned
+// listener is accepted the same way (tailscale_accept), each accepted
+// connection being a connection to the Service.
+//
+// port is the TCP port to advertise for the Service. When terminate_tls is
+// non-zero the node terminates TLS before forwarding (the only permitted SNI
+// is the Service's fully-qualified domain name) and hands plaintext to the
+// listener; when zero the raw (still-encrypted) stream is forwarded.
+//
+// The node must be tagged, and advertising still requires admin/ACL approval
+// before the Service goes live. See https://tailscale.com/kb/1552.
+//
+// It will start the server if it has not been started yet.
+//
+// Returns zero on success or -1 on error, call tailscale_errmsg for details.
+extern int tailscale_listen_service(tailscale sd, const char* name, int port, int terminate_tls, tailscale_listener* listener_out);
+
+// tailscale_enable_funnel_to_localhost_plaintext_http1 configures sd to have
+// Tailscale Funnel enabled, routing requests from the public web
+// (without any authentication) down to this Tailscale node, requesting new 
+// LetsEncrypt TLS certs as needed, terminating TLS, and proxying all incoming
+// HTTPS requests to http://127.0.0.1:localhostPort without TLS. 
+//
+// There should be a plaintext HTTP/1 server listening on 127.0.0.1:localhostPort
+// or tsnet will serve HTTP 502 errors.
+//
+// Expect junk traffic from the internet from bots watching the public CT logs.
+//
+// Returns:
+// 	0     - success
+// 	-1    - other error, details printed to the tsnet logger
+extern int tailscale_enable_funnel_to_localhost_plaintext_http1(tailscale sd, int localhostPort);
+
+// tailscale_login_interactive starts interactive (web) authentication for sd,
+// the in-process equivalent of POST /localapi/v0/login-interactive.
+//
+// The resulting authentication URL is NOT returned here: it arrives as a
+// BrowseToURL notification on the IPN bus (tailscale_watch_ipn_bus) and in
+// tailscale_status_json's AuthURL. Call this when the backend reports
+// NeedsLogin and no auth URL has arrived yet.
+//
+// Like tailscale_status_json and tailscale_watch_ipn_bus this rides tsnet's
+// in-memory LocalAPI listener, so it does not depend on the loopback listener
+// an operating system may reclaim from a suspended process.
+//
+// Returns:
+// 	0     - success
+// 	EBADF - sd is not a valid tailscale
+// 	-1    - call tailscale_errmsg for details
+extern int tailscale_login_interactive(tailscale sd);
+
+// tailscale_edit_prefs applies mask_json to sd's preferences, the in-process
+// equivalent of PATCH /localapi/v0/prefs.
+//
+// mask_json is a JSON-encoded ipn.MaskedPrefs: the preference fields to change
+// alongside a boolean "<Field>Set" for each one, exactly the document that
+// endpoint accepts. A mask with no Set flag is rejected rather than silently
+// applying nothing.
+//
+// The canonical use is a WantRunning cycle — the userspace equivalent of
+// `tailscale down && tailscale up` — which re-forms the control, DERP and
+// magicsock state without replacing the node.
+//
+// If prefs_out is non-NULL it receives the resulting ipn.Prefs as a
+// NUL-terminated JSON string which the caller must free(); pass NULL to
+// discard it.
+//
+// Returns:
+// 	0     - success
+// 	EBADF - sd is not a valid tailscale
+// 	-1    - call tailscale_errmsg for details
+extern int tailscale_edit_prefs(tailscale sd, const char* mask_json, char** prefs_out);
+
+// tailscale_current_profile writes sd's active login profile to json_out as a
+// NUL-terminated JSON-encoded ipn.LoginProfile, the in-process equivalent of
+// GET /localapi/v0/profiles/current. The caller must free() it.
+//
+// This is how an embedder names the signed-in account ("Hello <name>"): the
+// profile carries the display name and login name, which status does not.
+//
+// Returns:
+// 	0     - success, *json_out is set
+// 	EBADF - sd is not a valid tailscale
+// 	-1    - call tailscale_errmsg for details (*json_out is NULL)
+extern int tailscale_current_profile(tailscale sd, char** json_out);
+
 // tailscale_errmsg writes the details of the last error to buf.
 //
 // After returning, buf is always NUL-terminated.

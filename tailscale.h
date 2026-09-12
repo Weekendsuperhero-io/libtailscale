@@ -279,6 +279,59 @@ extern int tailscale_watch_ipn_bus(tailscale sd, uint64_t mask, int* fd_out);
 // 	-1    - other error, details printed to the tsnet logger
 extern int tailscale_enable_funnel_to_localhost_plaintext_http1(tailscale sd, int localhostPort);
 
+// tailscale_login_interactive starts interactive (web) authentication for sd,
+// the in-process equivalent of POST /localapi/v0/login-interactive.
+//
+// The resulting authentication URL is NOT returned here: it arrives as a
+// BrowseToURL notification on the IPN bus (tailscale_watch_ipn_bus) and in
+// tailscale_status_json's AuthURL. Call this when the backend reports
+// NeedsLogin and no auth URL has arrived yet.
+//
+// Like tailscale_status_json and tailscale_watch_ipn_bus this rides tsnet's
+// in-memory LocalAPI listener, so it does not depend on the loopback listener
+// an operating system may reclaim from a suspended process.
+//
+// Returns:
+// 	0     - success
+// 	EBADF - sd is not a valid tailscale
+// 	-1    - call tailscale_errmsg for details
+extern int tailscale_login_interactive(tailscale sd);
+
+// tailscale_edit_prefs applies mask_json to sd's preferences, the in-process
+// equivalent of PATCH /localapi/v0/prefs.
+//
+// mask_json is a JSON-encoded ipn.MaskedPrefs: the preference fields to change
+// alongside a boolean "<Field>Set" for each one, exactly the document that
+// endpoint accepts. A mask with no Set flag is rejected rather than silently
+// applying nothing.
+//
+// The canonical use is a WantRunning cycle — the userspace equivalent of
+// `tailscale down && tailscale up` — which re-forms the control, DERP and
+// magicsock state without replacing the node.
+//
+// If prefs_out is non-NULL it receives the resulting ipn.Prefs as a
+// NUL-terminated JSON string which the caller must free(); pass NULL to
+// discard it.
+//
+// Returns:
+// 	0     - success
+// 	EBADF - sd is not a valid tailscale
+// 	-1    - call tailscale_errmsg for details
+extern int tailscale_edit_prefs(tailscale sd, const char* mask_json, char** prefs_out);
+
+// tailscale_current_profile writes sd's active login profile to json_out as a
+// NUL-terminated JSON-encoded ipn.LoginProfile, the in-process equivalent of
+// GET /localapi/v0/profiles/current. The caller must free() it.
+//
+// This is how an embedder names the signed-in account ("Hello <name>"): the
+// profile carries the display name and login name, which status does not.
+//
+// Returns:
+// 	0     - success, *json_out is set
+// 	EBADF - sd is not a valid tailscale
+// 	-1    - call tailscale_errmsg for details (*json_out is NULL)
+extern int tailscale_current_profile(tailscale sd, char** json_out);
+
 // tailscale_errmsg writes the details of the last error to buf.
 // 
 // After returning, buf is always NUL-terminated.
