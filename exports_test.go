@@ -298,3 +298,46 @@ func TestParseMaskedPrefsRoundTripsIpnMaskedPrefs(t *testing.T) {
 		t.Errorf("Hostname lost: set=%v value=%q", got.HostnameSet, got.Hostname)
 	}
 }
+
+// tailscale_set_advertise_tags: what a node asks control for at login.
+func TestSetAdvertiseTagsParsesACommaList(t *testing.T) {
+	s := &server{s: &tsnet.Server{}}
+	if err := s.setAdvertiseTags(" tag:muse-host , ,tag:other "); err != nil {
+		t.Fatalf("setAdvertiseTags: %v", err)
+	}
+	if got := s.s.AdvertiseTags; len(got) != 2 || got[0] != "tag:muse-host" || got[1] != "tag:other" {
+		t.Fatalf("AdvertiseTags = %q, want [tag:muse-host tag:other]", got)
+	}
+	if err := s.setAdvertiseTags(""); err != nil {
+		t.Fatalf("clearing: %v", err)
+	}
+	if got := s.s.AdvertiseTags; len(got) != 0 {
+		t.Fatalf("an empty list must clear the tags, got %q", got)
+	}
+}
+
+// A malformed tag fails at the call, not as a refused registration after the
+// person has finished logging in — and leaves the previous tags in place.
+func TestSetAdvertiseTagsRejectsAMalformedTag(t *testing.T) {
+	s := &server{s: &tsnet.Server{}}
+	if err := s.setAdvertiseTags("tag:muse-host"); err != nil {
+		t.Fatalf("setAdvertiseTags: %v", err)
+	}
+	for _, bad := range []string{"muse-host", "tag:", "tag:has space", "tag:muse-host,server"} {
+		if err := s.setAdvertiseTags(bad); err == nil {
+			t.Errorf("setAdvertiseTags(%q) succeeded; want an error", bad)
+		}
+	}
+	if got := s.s.AdvertiseTags; len(got) != 1 || got[0] != "tag:muse-host" {
+		t.Fatalf("a refused call changed the tags to %q", got)
+	}
+}
+
+// Tags apply at registration, so setting them on a running server would do
+// nothing until the next login — refused instead of silently ignored.
+func TestSetAdvertiseTagsRefusesAfterStart(t *testing.T) {
+	s := &server{s: &tsnet.Server{}, started: true}
+	if err := s.setAdvertiseTags("tag:muse-host"); err == nil {
+		t.Fatal("setAdvertiseTags on a started server succeeded; want an error")
+	}
+}

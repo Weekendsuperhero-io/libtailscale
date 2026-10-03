@@ -71,6 +71,14 @@ extern int tailscale_set_dir(tailscale sd, const char* dir);
 // state file is migrated in place (sealed, verified, then removed). The
 // caller owns key custody; losing the key orphans the node identity.
 extern int tailscale_set_state_key(tailscale sd, const char* key);
+
+// tailscale_set_advertise_tags sets the tags the node asks control for at
+// every login, interactive or by auth key, as a comma-separated list
+// ("tag:a,tag:b"); an empty string clears it. Control grants them when the
+// logging-in identity may apply them (a tag owner, or an Owner, Admin or
+// Network admin), and the node registers tag-owned. Each entry must be a valid
+// tag. Call before the server starts. See tsnet.Server.AdvertiseTags.
+extern int tailscale_set_advertise_tags(tailscale sd, const char* tags);
 extern int tailscale_set_hostname(tailscale sd, const char* hostname);
 extern int tailscale_set_authkey(tailscale sd, const char* authkey);
 extern int tailscale_set_control_url(tailscale sd, const char* control_url);

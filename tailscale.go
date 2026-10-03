@@ -29,6 +29,7 @@ import (
 	"tailscale.com/hostinfo"
 	"tailscale.com/ipn"
 	"tailscale.com/net/socks5"
+	"tailscale.com/tailcfg"
 	"tailscale.com/tsnet"
 	"tailscale.com/types/logger"
 )
@@ -560,6 +561,44 @@ func TsnetSetStateKey(sd C.int, key *C.char) C.int {
 	}
 	s.s.Store = store
 	return 0
+}
+
+//export TsnetSetAdvertiseTags
+func TsnetSetAdvertiseTags(sd C.int, tags *C.char) C.int {
+	s := getServer(sd)
+	if s == nil {
+		return C.EBADF
+	}
+	if err := s.setAdvertiseTags(C.GoString(tags)); err != nil {
+		return s.recErr(err)
+	}
+	return 0
+}
+
+// setAdvertiseTags gives the server the tags it asks control for at every
+// login, interactive or by auth key: a comma-separated list ("tag:a,tag:b"),
+// with "" clearing it. Control grants them when the logging-in identity may
+// apply them (a tag owner, or an Owner/Admin/Network admin), and the node then
+// registers tag-owned. Every entry must be a valid tag (tailcfg.CheckTag), so a
+// malformed one fails here instead of as a refused registration after the
+// person has finished logging in.
+func (s *server) setAdvertiseTags(raw string) error {
+	if s.started {
+		return fmt.Errorf("tailscale_set_advertise_tags must be called before the server starts")
+	}
+	var tags []string
+	for _, tag := range strings.Split(raw, ",") {
+		tag = strings.TrimSpace(tag)
+		if tag == "" {
+			continue
+		}
+		if err := tailcfg.CheckTag(tag); err != nil {
+			return fmt.Errorf("tailscale_set_advertise_tags: %w", err)
+		}
+		tags = append(tags, tag)
+	}
+	s.s.AdvertiseTags = tags
+	return nil
 }
 
 //export TsnetSetHostname
